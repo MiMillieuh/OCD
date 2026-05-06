@@ -3,7 +3,7 @@ name: 'publish'
 on:
   push:
     branches:
-      - release
+      - main
 
 jobs:
   publish-tauri:
@@ -51,19 +51,56 @@ jobs:
           releaseName: 'App v__VERSION__'
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true
-          prerelase: false
+          prerelease: false
           args: ${{ matrix.args }}
 
-      # ─── REMOVE BUNDLED WAYLAND/EGL LIBS FROM APPIMAGE (Ubuntu only) ───
+      # ─── DELETE OLD APPIMAGE ASSET FROM RELEASE (Ubuntu only) ───
+      - name: Delete old AppImage from release
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get the release ID from the tauri-action output
+          RELEASE_URL="${{ steps.tauri-build.outputs.releaseUploadUrl }}"
+          # Extract release ID from upload URL (format: .../releases/{id}/assets{?name,label})
+          RELEASE_ID=$(echo "$RELEASE_URL" | sed -E 's|.*/releases/([0-9]+)/assets.*|\1|')
+          
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "$RELEASE_URL" ]; then
+            echo "Could not extract release ID from upload URL, trying fallback..."
+            # Fallback: get release by tag
+            TAG_NAME="app-v${{ steps.tauri-build.outputs.appVersion }}"
+            RELEASE_DATA=$(gh api repos/${{ github.repository }}/releases/tags/$TAG_NAME --jq '.id' 2>/dev/null || echo "")
+            RELEASE_ID="$RELEASE_DATA"
+          fi
+          
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+            echo "Release ID: $RELEASE_ID"
+            # List assets and find AppImage
+            ASSET_ID=$(gh api repos/${{ github.repository }}/releases/$RELEASE_ID --jq '.assets[] | select(.name | endswith(".AppImage")) | .id' 2>/dev/null | head -n 1)
+            if [ -n "$ASSET_ID" ]; then
+              echo "Deleting existing AppImage asset ID: $ASSET_ID"
+              gh api --method DELETE repos/${{ github.repository }}/releases/assets/$ASSET_ID
+            else
+              echo "No existing AppImage asset found"
+            fi
+          else
+            echo "No release ID found, skipping deletion"
+          fi
+
+      # ─── STRIP BUNDLED WAYLAND/EGL FROM APPIMAGE (Ubuntu only) ───
       - name: Strip bundled Wayland/EGL from AppImage
         if: matrix.platform == 'ubuntu-22.04'
+        id: strip-appimage
         run: |
-          # Find the built AppImage (tauri-action puts it in src-tauri/target/release/bundle/appimage/)
-          APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -n 1)
+          APPIMAGE=$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name "*.AppImage" | head -n 1)
           if [ -z "$APPIMAGE" ]; then
             echo "No AppImage found, skipping"
-            exit 0
+            exit 1
           fi
+          
+          APPNAME=$(basename "$APPIMAGE")
+          echo "appimage_path=$APPIMAGE" >> $GITHUB_OUTPUT
+          echo "appimage_name=$APPNAME" >> $GITHUB_OUTPUT
           echo "Processing: $APPIMAGE"
           
           # Extract
@@ -76,6 +113,9 @@ jobs:
           rm -f squashfs-root/lib/libwayland-*.so*
           rm -f squashfs-root/lib/libEGL*.so*
           
+          # Remove original before repacking
+          rm -f "$APPIMAGE"
+          
           # Repack using appimagetool
           wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
           chmod +x appimagetool
@@ -83,14 +123,18 @@ jobs:
           
           # Cleanup
           rm -rf squashfs-root/ appimagetool
+          
+          echo "Repacked: $APPIMAGE"
+          ls -lh "$APPIMAGE"
 
-      - name: Upload modified AppImage to release
+      # ─── UPLOAD MODIFIED APPIMAGE ───
+      - name: Upload modified AppImage
         if: matrix.platform == 'ubuntu-22.04'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.tauri-build.outputs.releaseUploadUrl }}
-          asset_path: src-tauri/target/release/bundle/appimage/*.AppImage
-          asset_name: OCD_${{ steps.tauri-build.outputs.appVersion }}_amd64.AppImage
+          asset_path: ${{ steps.strip-appimage.outputs.appimage_path }}
+          asset_name: ${{ steps.strip-appimage.outputs.appimage_name }}
           asset_content_type: application/x-executable
