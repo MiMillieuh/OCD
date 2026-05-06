@@ -45,3 +45,10 @@ Settings are stored in the OS app data directory (`~/.config/OCD/` on Linux) as 
 | `password` | `""` | Server auth password |
 
 When `expose_network` is enabled, both `username` and `password` are required.
+
+## Donations
+
+If you want to support me, it would be appreciated :)
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/W7W61L0JLW)
+
