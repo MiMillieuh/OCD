@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-restart-server"
+description = "Allows the restart_server command"
+commands.allow = ["restart_server"]

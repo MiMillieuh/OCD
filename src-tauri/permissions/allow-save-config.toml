@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-save-config"
+description = "Allows the save_config command"
+commands.allow = ["save_config"]
