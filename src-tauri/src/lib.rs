@@ -26,9 +26,24 @@ fn start_server(config: &Config) -> Result<Child, String> {
 fn stop_server(process_state: &ServerProcess) {
     if let Ok(mut child_opt) = process_state.0.lock() {
         if let Some(mut child) = child_opt.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-            std::thread::sleep(Duration::from_millis(500));
+            if let Err(e) = child.kill() {
+                eprintln!("Warning: failed to kill server process: {}", e);
+            }
+            let start = std::time::Instant::now();
+            while start.elapsed() < Duration::from_secs(2) {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        println!("Server process exited with status: {:?}", status);
+                        return;
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                    Err(e) => {
+                        eprintln!("Warning: error waiting for server process: {}", e);
+                        return;
+                    }
+                }
+            }
+            eprintln!("Warning: server process did not exit within 2s after kill");
         }
     }
 }
@@ -84,10 +99,12 @@ fn restart_server_internal(app_handle: &AppHandle) -> Result<(), String> {
     wait_for_server(config.port);
 
     for window in app_handle.webview_windows().values() {
-        let _ = window.eval(&format!(
+        if let Err(e) = window.eval(&format!(
             "window.location.href = 'http://localhost:{}';",
             config.port
-        ));
+        )) {
+            eprintln!("Warning: failed to navigate window: {}", e);
+        }
     }
 
     Ok(())
@@ -113,6 +130,23 @@ fn restart_server(app_handle: AppHandle) -> Result<(), String> {
 const INJECT_SCRIPT: &str = r#"
 (function() {
     if (document.getElementById('ocd-settings')) return;
+
+    const origInstantiate = WebAssembly.instantiate;
+    WebAssembly.instantiate = async function(bufferSource, importObject) {
+        if (bufferSource instanceof Response) {
+            const ab = await bufferSource.clone().arrayBuffer();
+            return origInstantiate.call(this, ab, importObject);
+        }
+        return origInstantiate.call(this, bufferSource, importObject);
+    };
+    const origInstantiateStreaming = WebAssembly.instantiateStreaming;
+    if (origInstantiateStreaming) {
+        WebAssembly.instantiateStreaming = async function(source, importObject) {
+            const response = await source;
+            const ab = await response.clone().arrayBuffer();
+            return origInstantiate.call(WebAssembly, ab, importObject);
+        };
+    }
 
     const style = document.createElement('style');
     style.textContent = `
@@ -355,21 +389,29 @@ pub fn run() {
                     if payload.event() == PageLoadEvent::Finished {
                         let url = payload.url().to_string();
                         if url.starts_with("http://localhost:") || url.starts_with("http://127.0.0.1:") {
-                            let _ = window.eval(INJECT_SCRIPT);
+                            if let Err(e) = window.eval(INJECT_SCRIPT) {
+                                eprintln!("Warning: failed to inject settings script: {}", e);
+                            }
                         }
                     }
                 })
                 .build()?;
 
-            let _ = window.eval(&format!(
+            if let Err(e) = window.eval(&format!(
                 "window.location.href = 'http://localhost:{}';",
                 config.port
-            ));
+            )) {
+                eprintln!("Warning: failed to set initial window location: {}", e);
+            }
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_config, save_config, restart_server])
         .build(tauri::generate_context!())
+        .map_err(|e| {
+            eprintln!("Fatal error while building tauri application: {}", e);
+            e
+        })
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {

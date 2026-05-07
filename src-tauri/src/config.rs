@@ -26,20 +26,31 @@ impl Default for Config {
 
 impl Config {
     fn config_path<R: tauri::Runtime>(manager: &impl Manager<R>) -> PathBuf {
-        manager
-            .path()
-            .app_data_dir()
-            .expect("failed to get app data dir")
-            .join("config.json")
+        match manager.path().app_data_dir() {
+            Ok(dir) => dir.join("config.json"),
+            Err(e) => {
+                eprintln!("Warning: failed to get app data dir: {}. Using fallback path.", e);
+                PathBuf::from("config.json")
+            }
+        }
     }
 
     pub fn load<R: tauri::Runtime>(manager: &impl Manager<R>) -> Self {
         let path = Self::config_path(manager);
         if path.exists() {
-            fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default()
+            match fs::read_to_string(&path) {
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        eprintln!("Warning: failed to parse config at {:?}: {}. Using defaults.", path, e);
+                        Self::default()
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Warning: failed to read config at {:?}: {}. Using defaults.", path, e);
+                    Self::default()
+                }
+            }
         } else {
             Self::default()
         }
