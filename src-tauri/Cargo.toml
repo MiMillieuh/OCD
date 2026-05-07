@@ -1,7 +1,7 @@
 [package]
 name = "ocd"
-version = "0.1.0"
-description = "A Tauri App"
+version = "0.1.1"
+description = "A simple wrapper for OpenCode that allow simple use and network exposure if needed for remote work"
 authors = ["MiMillieuh"]
 edition = "2021"
 
